@@ -1021,7 +1021,11 @@ fn run_default_mode(
     // 6. Generate user-global filters template (~/.config/rtk/filters.toml)
     generate_global_filters_template(verbose, dry_run)?;
 
-    println!(); // Final newline
+    if dry_run {
+        println!("\n[dry-run] Nothing written.");
+    } else {
+        println!(); // Final newline
+    }
 
     Ok(())
 }
@@ -1171,7 +1175,11 @@ fn run_hook_only_mode(
         }
     }
 
-    println!(); // Final newline
+    if dry_run {
+        println!("\n[dry-run] Nothing written.");
+    } else {
+        println!(); // Final newline
+    }
 
     Ok(())
 }
@@ -1287,9 +1295,15 @@ fn run_claude_md_mode(
                 );
             }
         }
-        println!("   Claude Code will now use rtk in all sessions");
-    } else {
+        if !dry_run {
+            println!("   Claude Code will now use rtk in all sessions");
+        }
+    } else if !dry_run {
         println!("   Claude Code will use rtk in this project");
+    }
+
+    if dry_run {
+        println!("\n[dry-run] Nothing written.");
     }
 
     Ok(())
@@ -1333,8 +1347,12 @@ fn run_cline_mode(verbose: u8, dry_run: bool) -> Result<()> {
             println!("  Rules: .clinerules (installed)");
         }
     }
-    println!("  Cline will now use rtk commands for token savings.");
-    println!("  Test with: git status\n");
+    if dry_run {
+        println!("\n[dry-run] Nothing written.");
+    } else {
+        println!("  Cline will now use rtk commands for token savings.");
+        println!("  Test with: git status\n");
+    }
 
     Ok(())
 }
@@ -1368,8 +1386,12 @@ fn run_windsurf_mode(verbose: u8, dry_run: bool) -> Result<()> {
             println!("  Rules: .windsurfrules (installed)");
         }
     }
-    println!("  Cascade will now use rtk commands for token savings.");
-    println!("  Restart Windsurf. Test with: git status\n");
+    if dry_run {
+        println!("\n[dry-run] Nothing written.");
+    } else {
+        println!("  Cascade will now use rtk commands for token savings.");
+        println!("  Restart Windsurf. Test with: git status\n");
+    }
 
     Ok(())
 }
@@ -2270,9 +2292,13 @@ fn show_codex_config() -> Result<()> {
 fn run_opencode_only_mode(verbose: u8, dry_run: bool) -> Result<()> {
     let opencode_plugin_path = prepare_opencode_plugin_path()?;
     ensure_opencode_plugin_installed(&opencode_plugin_path, verbose, dry_run)?;
-    println!("\nOpenCode plugin installed (global).\n");
-    println!("  OpenCode: {}", opencode_plugin_path.display());
-    println!("  Restart OpenCode. Test with: git status\n");
+    if dry_run {
+        println!("\n[dry-run] Nothing written.");
+    } else {
+        println!("\nOpenCode plugin installed (global).\n");
+        println!("  OpenCode: {}", opencode_plugin_path.display());
+        println!("  Restart OpenCode. Test with: git status\n");
+    }
     Ok(())
 }
 
@@ -2341,12 +2367,16 @@ pub fn run_gemini(
     // 3. Patch ~/.gemini/settings.json
     patch_gemini_settings(&gemini_dir, &hook_path, patch_mode, verbose, dry_run)?;
 
-    println!("\nGemini CLI hook installed (global).\n");
-    println!("  Hook: {}", hook_path.display());
-    if !hook_only {
-        println!("  GEMINI.md: {}", gemini_dir.join(GEMINI_MD).display());
+    if dry_run {
+        println!("\n[dry-run] Nothing written.");
+    } else {
+        println!("\nGemini CLI hook installed (global).\n");
+        println!("  Hook: {}", hook_path.display());
+        if !hook_only {
+            println!("  GEMINI.md: {}", gemini_dir.join(GEMINI_MD).display());
+        }
+        println!("  Restart Gemini CLI. Test with: git status\n");
     }
-    println!("  Restart Gemini CLI. Test with: git status\n");
     Ok(())
 }
 
