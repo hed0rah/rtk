@@ -229,6 +229,7 @@ pub fn run(
     codex: bool,
     patch_mode: PatchMode,
     verbose: u8,
+    dry_run: bool,
 ) -> Result<()> {
     // Validation: Codex mode conflicts
     if codex {
@@ -247,7 +248,7 @@ pub fn run(
         if matches!(patch_mode, PatchMode::Skip) {
             anyhow::bail!("--codex cannot be combined with --no-patch");
         }
-        return run_codex_mode(global, verbose);
+        return run_codex_mode(global, verbose, dry_run);
     }
 
     // Validation: Global-only features
@@ -265,20 +266,24 @@ pub fn run(
 
     // Windsurf-only mode
     if install_windsurf {
-        return run_windsurf_mode(verbose);
+        return run_windsurf_mode(verbose, dry_run);
     }
 
     // Cline-only mode
     if install_cline {
-        return run_cline_mode(verbose);
+        return run_cline_mode(verbose, dry_run);
     }
 
     // Mode selection (Claude Code / OpenCode)
     match (install_claude, install_opencode, claude_md, hook_only) {
-        (false, true, _, _) => run_opencode_only_mode(verbose)?,
-        (true, opencode, true, _) => run_claude_md_mode(global, verbose, opencode)?,
-        (true, opencode, false, true) => run_hook_only_mode(global, patch_mode, verbose, opencode)?,
-        (true, opencode, false, false) => run_default_mode(global, patch_mode, verbose, opencode)?,
+        (false, true, _, _) => run_opencode_only_mode(verbose, dry_run)?,
+        (true, opencode, true, _) => run_claude_md_mode(global, verbose, opencode, dry_run)?,
+        (true, opencode, false, true) => {
+            run_hook_only_mode(global, patch_mode, verbose, opencode, dry_run)?
+        }
+        (true, opencode, false, false) => {
+            run_default_mode(global, patch_mode, verbose, opencode, dry_run)?
+        }
         (false, false, _, _) => {
             if !install_cursor {
                 anyhow::bail!("at least one of install_claude or install_opencode must be true")
@@ -288,7 +293,7 @@ pub fn run(
 
     // Cursor hooks (additive, installed alongside Claude Code)
     if install_cursor {
-        install_cursor_hooks(verbose)?;
+        install_cursor_hooks(verbose, dry_run)?;
     }
 
     println!();
@@ -308,7 +313,7 @@ fn prepare_hook_paths() -> Result<(PathBuf, PathBuf)> {
 
 /// Write hook file if missing or outdated, return true if changed
 #[cfg(unix)]
-fn ensure_hook_installed(hook_path: &Path, verbose: u8) -> Result<bool> {
+fn ensure_hook_installed(hook_path: &Path, verbose: u8, dry_run: bool) -> Result<bool> {
     let changed = if hook_path.exists() {
         let existing = fs::read_to_string(hook_path)
             .with_context(|| format!("Failed to read existing hook: {}", hook_path.display()))?;
@@ -319,21 +324,39 @@ fn ensure_hook_installed(hook_path: &Path, verbose: u8) -> Result<bool> {
             }
             false
         } else {
-            fs::write(hook_path, REWRITE_HOOK)
-                .with_context(|| format!("Failed to write hook to {}", hook_path.display()))?;
-            if verbose > 0 {
-                eprintln!("Updated hook: {}", hook_path.display());
+            if dry_run {
+                println!("[dry-run] would update hook: {}", hook_path.display());
+                if verbose > 0 {
+                    println!("[dry-run] content:\n{}", REWRITE_HOOK);
+                }
+            } else {
+                fs::write(hook_path, REWRITE_HOOK)
+                    .with_context(|| format!("Failed to write hook to {}", hook_path.display()))?;
+                if verbose > 0 {
+                    eprintln!("Updated hook: {}", hook_path.display());
+                }
             }
             true
         }
     } else {
-        fs::write(hook_path, REWRITE_HOOK)
-            .with_context(|| format!("Failed to write hook to {}", hook_path.display()))?;
-        if verbose > 0 {
-            eprintln!("Created hook: {}", hook_path.display());
+        if dry_run {
+            println!("[dry-run] would create hook: {}", hook_path.display());
+            if verbose > 0 {
+                println!("[dry-run] content:\n{}", REWRITE_HOOK);
+            }
+        } else {
+            fs::write(hook_path, REWRITE_HOOK)
+                .with_context(|| format!("Failed to write hook to {}", hook_path.display()))?;
+            if verbose > 0 {
+                eprintln!("Created hook: {}", hook_path.display());
+            }
         }
         true
     };
+
+    if dry_run {
+        return Ok(changed);
+    }
 
     // Set executable permissions
     use std::os::unix::fs::PermissionsExt;
@@ -353,7 +376,13 @@ fn ensure_hook_installed(hook_path: &Path, verbose: u8) -> Result<bool> {
 }
 
 /// Idempotent file write: create or update if content differs
-fn write_if_changed(path: &Path, content: &str, name: &str, verbose: u8) -> Result<bool> {
+fn write_if_changed(
+    path: &Path,
+    content: &str,
+    name: &str,
+    verbose: u8,
+    dry_run: bool,
+) -> Result<bool> {
     if path.exists() {
         let existing = fs::read_to_string(path)
             .with_context(|| format!("Failed to read {}: {}", name, path.display()))?;
@@ -364,18 +393,32 @@ fn write_if_changed(path: &Path, content: &str, name: &str, verbose: u8) -> Resu
             }
             Ok(false)
         } else {
-            fs::write(path, content)
-                .with_context(|| format!("Failed to write {}: {}", name, path.display()))?;
-            if verbose > 0 {
-                eprintln!("Updated {}: {}", name, path.display());
+            if dry_run {
+                println!("[dry-run] would update {}: {}", name, path.display());
+                if verbose > 0 {
+                    println!("[dry-run] content:\n{}", content);
+                }
+            } else {
+                fs::write(path, content)
+                    .with_context(|| format!("Failed to write {}: {}", name, path.display()))?;
+                if verbose > 0 {
+                    eprintln!("Updated {}: {}", name, path.display());
+                }
             }
             Ok(true)
         }
     } else {
-        fs::write(path, content)
-            .with_context(|| format!("Failed to write {}: {}", name, path.display()))?;
-        if verbose > 0 {
-            eprintln!("Created {}: {}", name, path.display());
+        if dry_run {
+            println!("[dry-run] would create {}: {}", name, path.display());
+            if verbose > 0 {
+                println!("[dry-run] content:\n{}", content);
+            }
+        } else {
+            fs::write(path, content)
+                .with_context(|| format!("Failed to write {}: {}", name, path.display()))?;
+            if verbose > 0 {
+                eprintln!("Created {}: {}", name, path.display());
+            }
         }
         Ok(true)
     }
@@ -699,6 +742,7 @@ fn patch_settings_json(
     mode: PatchMode,
     verbose: u8,
     include_opencode: bool,
+    dry_run: bool,
 ) -> Result<PatchResult> {
     let claude_dir = resolve_claude_dir()?;
     let settings_path = claude_dir.join(SETTINGS_JSON);
@@ -749,6 +793,20 @@ fn patch_settings_json(
     // Deep-merge hook
     insert_hook_entry(&mut root, hook_command);
 
+    let serialized =
+        serde_json::to_string_pretty(&root).context("Failed to serialize settings.json")?;
+
+    if dry_run {
+        println!(
+            "[dry-run] would patch settings.json: {}",
+            settings_path.display()
+        );
+        if verbose > 0 {
+            println!("[dry-run] content:\n{}", serialized);
+        }
+        return Ok(PatchResult::Patched);
+    }
+
     // Backup original
     if settings_path.exists() {
         let backup_path = settings_path.with_extension("json.bak");
@@ -760,8 +818,6 @@ fn patch_settings_json(
     }
 
     // Atomic write
-    let serialized =
-        serde_json::to_string_pretty(&root).context("Failed to serialize settings.json")?;
     atomic_write(&settings_path, &serialized)?;
 
     println!("\n  settings.json: hook added");
@@ -876,11 +932,12 @@ fn run_default_mode(
     _patch_mode: PatchMode,
     _verbose: u8,
     _install_opencode: bool,
+    _dry_run: bool,
 ) -> Result<()> {
     eprintln!("[warn] Hook-based mode requires Unix (macOS/Linux).");
     eprintln!("    Windows: use --claude-md mode for full injection.");
     eprintln!("    Falling back to --claude-md mode.");
-    run_claude_md_mode(_global, _verbose, _install_opencode)
+    run_claude_md_mode(_global, _verbose, _install_opencode, _dry_run)
 }
 
 #[cfg(unix)]
@@ -889,11 +946,12 @@ fn run_default_mode(
     patch_mode: PatchMode,
     verbose: u8,
     install_opencode: bool,
+    dry_run: bool,
 ) -> Result<()> {
     if !global {
         // Local init: inject CLAUDE.md + generate project-local filters template
-        run_claude_md_mode(false, verbose, install_opencode)?;
-        generate_project_filters_template(verbose)?;
+        run_claude_md_mode(false, verbose, install_opencode, dry_run)?;
+        generate_project_filters_template(verbose, dry_run)?;
         return Ok(());
     }
 
@@ -903,21 +961,21 @@ fn run_default_mode(
 
     // 1. Prepare hook directory and install hook
     let (_hook_dir, hook_path) = prepare_hook_paths()?;
-    let hook_changed = ensure_hook_installed(&hook_path, verbose)?;
+    let hook_changed = ensure_hook_installed(&hook_path, verbose, dry_run)?;
 
     // 2. Write RTK.md
-    write_if_changed(&rtk_md_path, RTK_SLIM, RTK_MD, verbose)?;
+    write_if_changed(&rtk_md_path, RTK_SLIM, RTK_MD, verbose, dry_run)?;
 
     let opencode_plugin_path = if install_opencode {
         let path = prepare_opencode_plugin_path()?;
-        ensure_opencode_plugin_installed(&path, verbose)?;
+        ensure_opencode_plugin_installed(&path, verbose, dry_run)?;
         Some(path)
     } else {
         None
     };
 
     // 3. Patch CLAUDE.md (add @RTK.md, migrate if needed)
-    let migrated = patch_claude_md(&claude_md_path, verbose)?;
+    let migrated = patch_claude_md(&claude_md_path, verbose, dry_run)?;
 
     // 4. Print success message
     let hook_status = if hook_changed {
@@ -939,7 +997,8 @@ fn run_default_mode(
     }
 
     // 5. Patch settings.json
-    let patch_result = patch_settings_json(&hook_path, patch_mode, verbose, install_opencode)?;
+    let patch_result =
+        patch_settings_json(&hook_path, patch_mode, verbose, install_opencode, dry_run)?;
 
     // Report result
     match patch_result {
@@ -960,7 +1019,7 @@ fn run_default_mode(
     }
 
     // 6. Generate user-global filters template (~/.config/rtk/filters.toml)
-    generate_global_filters_template(verbose)?;
+    generate_global_filters_template(verbose, dry_run)?;
 
     println!(); // Final newline
 
@@ -968,13 +1027,24 @@ fn run_default_mode(
 }
 
 /// Generate .rtk/filters.toml template in the current directory if not present.
-fn generate_project_filters_template(verbose: u8) -> Result<()> {
+fn generate_project_filters_template(verbose: u8, dry_run: bool) -> Result<()> {
     let rtk_dir = std::path::Path::new(".rtk");
     let path = rtk_dir.join("filters.toml");
 
     if path.exists() {
         if verbose > 0 {
             eprintln!(".rtk/filters.toml already exists, skipping template");
+        }
+        return Ok(());
+    }
+
+    if dry_run {
+        println!(
+            "[dry-run] would create filters template: {}",
+            path.display()
+        );
+        if verbose > 0 {
+            println!("[dry-run] content:\n{}", FILTERS_TEMPLATE);
         }
         return Ok(());
     }
@@ -992,7 +1062,7 @@ fn generate_project_filters_template(verbose: u8) -> Result<()> {
 }
 
 /// Generate ~/.config/rtk/filters.toml template if not present.
-fn generate_global_filters_template(verbose: u8) -> Result<()> {
+fn generate_global_filters_template(verbose: u8, dry_run: bool) -> Result<()> {
     let config_dir = dirs::config_dir().unwrap_or_else(|| std::path::PathBuf::from(".config"));
     let rtk_dir = config_dir.join(crate::core::constants::RTK_DATA_DIR);
     let path = rtk_dir.join("filters.toml");
@@ -1000,6 +1070,17 @@ fn generate_global_filters_template(verbose: u8) -> Result<()> {
     if path.exists() {
         if verbose > 0 {
             eprintln!("{} already exists, skipping template", path.display());
+        }
+        return Ok(());
+    }
+
+    if dry_run {
+        println!(
+            "[dry-run] would create global filters template: {}",
+            path.display()
+        );
+        if verbose > 0 {
+            println!("[dry-run] content:\n{}", FILTERS_GLOBAL_TEMPLATE);
         }
         return Ok(());
     }
@@ -1023,6 +1104,7 @@ fn run_hook_only_mode(
     _patch_mode: PatchMode,
     _verbose: u8,
     _install_opencode: bool,
+    _dry_run: bool,
 ) -> Result<()> {
     anyhow::bail!("Hook install requires Unix (macOS/Linux). Use WSL or --claude-md mode.")
 }
@@ -1033,6 +1115,7 @@ fn run_hook_only_mode(
     patch_mode: PatchMode,
     verbose: u8,
     install_opencode: bool,
+    dry_run: bool,
 ) -> Result<()> {
     if !global {
         eprintln!("[warn] Warning: --hook-only only makes sense with --global");
@@ -1042,11 +1125,11 @@ fn run_hook_only_mode(
 
     // Prepare and install hook
     let (_hook_dir, hook_path) = prepare_hook_paths()?;
-    let hook_changed = ensure_hook_installed(&hook_path, verbose)?;
+    let hook_changed = ensure_hook_installed(&hook_path, verbose, dry_run)?;
 
     let opencode_plugin_path = if install_opencode {
         let path = prepare_opencode_plugin_path()?;
-        ensure_opencode_plugin_installed(&path, verbose)?;
+        ensure_opencode_plugin_installed(&path, verbose, dry_run)?;
         Some(path)
     } else {
         None
@@ -1067,7 +1150,8 @@ fn run_hook_only_mode(
     );
 
     // Patch settings.json
-    let patch_result = patch_settings_json(&hook_path, patch_mode, verbose, install_opencode)?;
+    let patch_result =
+        patch_settings_json(&hook_path, patch_mode, verbose, install_opencode, dry_run)?;
 
     // Report result
     match patch_result {
@@ -1093,14 +1177,19 @@ fn run_hook_only_mode(
 }
 
 /// Legacy mode: full 137-line injection into CLAUDE.md
-fn run_claude_md_mode(global: bool, verbose: u8, install_opencode: bool) -> Result<()> {
+fn run_claude_md_mode(
+    global: bool,
+    verbose: u8,
+    install_opencode: bool,
+    dry_run: bool,
+) -> Result<()> {
     let path = if global {
         resolve_claude_dir()?.join(CLAUDE_MD)
     } else {
         PathBuf::from(CLAUDE_MD)
     };
 
-    if global {
+    if global && !dry_run {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
         }
@@ -1117,12 +1206,32 @@ fn run_claude_md_mode(global: bool, verbose: u8, install_opencode: bool) -> Resu
 
         match action {
             RtkBlockUpsert::Added => {
-                fs::write(&path, new_content)?;
-                println!("[ok] Added rtk instructions to existing {}", path.display());
+                if dry_run {
+                    println!(
+                        "[dry-run] would add rtk instructions to: {}",
+                        path.display()
+                    );
+                    if verbose > 0 {
+                        println!("[dry-run] content:\n{}", new_content);
+                    }
+                } else {
+                    fs::write(&path, new_content)?;
+                    println!("[ok] Added rtk instructions to existing {}", path.display());
+                }
             }
             RtkBlockUpsert::Updated => {
-                fs::write(&path, new_content)?;
-                println!("[ok] Updated rtk instructions in {}", path.display());
+                if dry_run {
+                    println!(
+                        "[dry-run] would update rtk instructions in: {}",
+                        path.display()
+                    );
+                    if verbose > 0 {
+                        println!("[dry-run] content:\n{}", new_content);
+                    }
+                } else {
+                    fs::write(&path, new_content)?;
+                    println!("[ok] Updated rtk instructions in {}", path.display());
+                }
             }
             RtkBlockUpsert::Unchanged => {
                 println!(
@@ -1154,6 +1263,14 @@ fn run_claude_md_mode(global: bool, verbose: u8, install_opencode: bool) -> Resu
                 return Ok(());
             }
         }
+    } else if dry_run {
+        println!(
+            "[dry-run] would create {} with rtk instructions",
+            path.display()
+        );
+        if verbose > 0 {
+            println!("[dry-run] content:\n{}", RTK_INSTRUCTIONS);
+        }
     } else {
         fs::write(&path, RTK_INSTRUCTIONS)?;
         println!("[ok] Created {} with rtk instructions", path.display());
@@ -1162,11 +1279,13 @@ fn run_claude_md_mode(global: bool, verbose: u8, install_opencode: bool) -> Resu
     if global {
         if install_opencode {
             let opencode_plugin_path = prepare_opencode_plugin_path()?;
-            ensure_opencode_plugin_installed(&opencode_plugin_path, verbose)?;
-            println!(
-                "[ok] OpenCode plugin installed: {}",
-                opencode_plugin_path.display()
-            );
+            ensure_opencode_plugin_installed(&opencode_plugin_path, verbose, dry_run)?;
+            if !dry_run {
+                println!(
+                    "[ok] OpenCode plugin installed: {}",
+                    opencode_plugin_path.display()
+                );
+            }
         }
         println!("   Claude Code will now use rtk in all sessions");
     } else {
@@ -1186,7 +1305,7 @@ const CLINE_RULES: &str = include_str!("../../hooks/cline/rules.md");
 
 // ─── Cline / Roo Code support ─────────────────────────────────
 
-fn run_cline_mode(verbose: u8) -> Result<()> {
+fn run_cline_mode(verbose: u8, dry_run: bool) -> Result<()> {
     // Cline reads .clinerules from the project root (workspace-scoped)
     let rules_path = PathBuf::from(".clinerules");
 
@@ -1200,14 +1319,19 @@ fn run_cline_mode(verbose: u8) -> Result<()> {
         } else {
             format!("{}\n\n{}", existing.trim(), CLINE_RULES)
         };
-        fs::write(&rules_path, &new_content).context("Failed to write .clinerules")?;
-
-        if verbose > 0 {
-            eprintln!("Wrote .clinerules");
+        if dry_run {
+            println!("[dry-run] would write: {}", rules_path.display());
+            if verbose > 0 {
+                println!("[dry-run] content:\n{}", new_content);
+            }
+        } else {
+            fs::write(&rules_path, &new_content).context("Failed to write .clinerules")?;
+            if verbose > 0 {
+                eprintln!("Wrote .clinerules");
+            }
+            println!("\nRTK configured for Cline.\n");
+            println!("  Rules: .clinerules (installed)");
         }
-
-        println!("\nRTK configured for Cline.\n");
-        println!("  Rules: .clinerules (installed)");
     }
     println!("  Cline will now use rtk commands for token savings.");
     println!("  Test with: git status\n");
@@ -1215,7 +1339,7 @@ fn run_cline_mode(verbose: u8) -> Result<()> {
     Ok(())
 }
 
-fn run_windsurf_mode(verbose: u8) -> Result<()> {
+fn run_windsurf_mode(verbose: u8, dry_run: bool) -> Result<()> {
     // Windsurf reads .windsurfrules from the project root (workspace-scoped).
     // Global rules (~/.codeium/windsurf/memories/global_rules.md) are unreliable.
     let rules_path = PathBuf::from(".windsurfrules");
@@ -1230,14 +1354,19 @@ fn run_windsurf_mode(verbose: u8) -> Result<()> {
         } else {
             format!("{}\n\n{}", existing.trim(), WINDSURF_RULES)
         };
-        fs::write(&rules_path, &new_content).context("Failed to write .windsurfrules")?;
-
-        if verbose > 0 {
-            eprintln!("Wrote .windsurfrules");
+        if dry_run {
+            println!("[dry-run] would write: {}", rules_path.display());
+            if verbose > 0 {
+                println!("[dry-run] content:\n{}", new_content);
+            }
+        } else {
+            fs::write(&rules_path, &new_content).context("Failed to write .windsurfrules")?;
+            if verbose > 0 {
+                eprintln!("Wrote .windsurfrules");
+            }
+            println!("\nRTK configured for Windsurf Cascade.\n");
+            println!("  Rules: .windsurfrules (installed)");
         }
-
-        println!("\nRTK configured for Windsurf Cascade.\n");
-        println!("  Rules: .windsurfrules (installed)");
     }
     println!("  Cascade will now use rtk commands for token savings.");
     println!("  Restart Windsurf. Test with: git status\n");
@@ -1245,7 +1374,7 @@ fn run_windsurf_mode(verbose: u8) -> Result<()> {
     Ok(())
 }
 
-fn run_codex_mode(global: bool, verbose: u8) -> Result<()> {
+fn run_codex_mode(global: bool, verbose: u8, dry_run: bool) -> Result<()> {
     let (agents_md_path, rtk_md_path) = if global {
         let codex_dir = resolve_codex_dir()?;
         (codex_dir.join(AGENTS_MD), codex_dir.join(RTK_MD))
@@ -1253,7 +1382,7 @@ fn run_codex_mode(global: bool, verbose: u8) -> Result<()> {
         (PathBuf::from(AGENTS_MD), PathBuf::from(RTK_MD))
     };
 
-    if global {
+    if global && !dry_run {
         if let Some(parent) = agents_md_path.parent() {
             fs::create_dir_all(parent).with_context(|| {
                 format!(
@@ -1273,8 +1402,8 @@ fn run_codex_mode(global: bool, verbose: u8) -> Result<()> {
         RTK_MD_REF.to_string()
     };
 
-    write_if_changed(&rtk_md_path, RTK_SLIM_CODEX, RTK_MD, verbose)?;
-    let added_ref = patch_agents_md(&agents_md_path, &rtk_md_ref, verbose)?;
+    write_if_changed(&rtk_md_path, RTK_SLIM_CODEX, RTK_MD, verbose, dry_run)?;
+    let added_ref = patch_agents_md(&agents_md_path, &rtk_md_ref, verbose, dry_run)?;
 
     println!("\nRTK configured for Codex CLI.\n");
     println!("  RTK.md:    {}", rtk_md_path.display());
@@ -1362,7 +1491,7 @@ fn upsert_rtk_block(content: &str, block: &str) -> (String, RtkBlockUpsert) {
 }
 
 /// Patch CLAUDE.md: add @RTK.md, migrate if old block exists
-fn patch_claude_md(path: &Path, verbose: u8) -> Result<bool> {
+fn patch_claude_md(path: &Path, verbose: u8, dry_run: bool) -> Result<bool> {
     let mut content = if path.exists() {
         fs::read_to_string(path)?
     } else {
@@ -1388,7 +1517,7 @@ fn patch_claude_md(path: &Path, verbose: u8) -> Result<bool> {
         if verbose > 0 {
             eprintln!("@RTK.md reference already present in CLAUDE.md");
         }
-        if migrated {
+        if migrated && !dry_run {
             fs::write(path, content)?;
         }
         return Ok(migrated);
@@ -1401,17 +1530,23 @@ fn patch_claude_md(path: &Path, verbose: u8) -> Result<bool> {
         format!("{}\n\n@RTK.md\n", content.trim())
     };
 
-    fs::write(path, new_content)?;
-
-    if verbose > 0 {
-        eprintln!("Added @RTK.md reference to CLAUDE.md");
+    if dry_run {
+        println!("[dry-run] would update CLAUDE.md: {}", path.display());
+        if verbose > 0 {
+            println!("[dry-run] content:\n{}", new_content);
+        }
+    } else {
+        fs::write(path, new_content)?;
+        if verbose > 0 {
+            eprintln!("Added @RTK.md reference to CLAUDE.md");
+        }
     }
 
     Ok(migrated)
 }
 
 /// Patch AGENTS.md: add @RTK.md (or absolute path), migrate old inline block if present
-fn patch_agents_md(path: &Path, rtk_md_ref: &str, verbose: u8) -> Result<bool> {
+fn patch_agents_md(path: &Path, rtk_md_ref: &str, verbose: u8, dry_run: bool) -> Result<bool> {
     let mut content = if path.exists() {
         fs::read_to_string(path)
             .with_context(|| format!("Failed to read AGENTS.md: {}", path.display()))?
@@ -1447,7 +1582,7 @@ fn patch_agents_md(path: &Path, rtk_md_ref: &str, verbose: u8) -> Result<bool> {
             }
             return Ok(true);
         }
-        if migrated {
+        if migrated && !dry_run {
             atomic_write(path, &content)
                 .with_context(|| format!("Failed to write AGENTS.md: {}", path.display()))?;
         }
@@ -1460,10 +1595,17 @@ fn patch_agents_md(path: &Path, rtk_md_ref: &str, verbose: u8) -> Result<bool> {
         format!("{}\n\n{}\n", content.trim(), rtk_md_ref)
     };
 
-    atomic_write(path, &new_content)
-        .with_context(|| format!("Failed to write AGENTS.md: {}", path.display()))?;
-    if verbose > 0 {
-        eprintln!("Added {} reference to AGENTS.md", rtk_md_ref);
+    if dry_run {
+        println!("[dry-run] would update AGENTS.md: {}", path.display());
+        if verbose > 0 {
+            println!("[dry-run] content:\n{}", new_content);
+        }
+    } else {
+        atomic_write(path, &new_content)
+            .with_context(|| format!("Failed to write AGENTS.md: {}", path.display()))?;
+        if verbose > 0 {
+            eprintln!("Added {} reference to AGENTS.md", rtk_md_ref);
+        }
     }
 
     Ok(true)
@@ -1576,8 +1718,8 @@ fn prepare_opencode_plugin_path() -> Result<PathBuf> {
 }
 
 /// Write OpenCode plugin file if missing or outdated
-fn ensure_opencode_plugin_installed(path: &Path, verbose: u8) -> Result<bool> {
-    write_if_changed(path, OPENCODE_PLUGIN, "OpenCode plugin", verbose)
+fn ensure_opencode_plugin_installed(path: &Path, verbose: u8, dry_run: bool) -> Result<bool> {
+    write_if_changed(path, OPENCODE_PLUGIN, "OpenCode plugin", verbose, dry_run)
 }
 
 /// Remove OpenCode plugin file
@@ -1605,22 +1747,30 @@ fn resolve_cursor_dir() -> Result<PathBuf> {
 }
 
 /// Install Cursor hooks: hook script + hooks.json
-fn install_cursor_hooks(verbose: u8) -> Result<()> {
+fn install_cursor_hooks(verbose: u8, dry_run: bool) -> Result<()> {
     let cursor_dir = resolve_cursor_dir()?;
     let hooks_dir = cursor_dir.join("hooks");
-    fs::create_dir_all(&hooks_dir).with_context(|| {
-        format!(
-            "Failed to create Cursor hooks directory: {}",
-            hooks_dir.display()
-        )
-    })?;
+    if !dry_run {
+        fs::create_dir_all(&hooks_dir).with_context(|| {
+            format!(
+                "Failed to create Cursor hooks directory: {}",
+                hooks_dir.display()
+            )
+        })?;
+    }
 
     // 1. Write hook script
     let hook_path = hooks_dir.join(REWRITE_HOOK_FILE);
-    let hook_changed = write_if_changed(&hook_path, CURSOR_REWRITE_HOOK, "Cursor hook", verbose)?;
+    let hook_changed = write_if_changed(
+        &hook_path,
+        CURSOR_REWRITE_HOOK,
+        "Cursor hook",
+        verbose,
+        dry_run,
+    )?;
 
     #[cfg(unix)]
-    {
+    if !dry_run {
         use std::os::unix::fs::PermissionsExt;
         fs::set_permissions(&hook_path, fs::Permissions::from_mode(0o755)).with_context(|| {
             format!(
@@ -1632,7 +1782,7 @@ fn install_cursor_hooks(verbose: u8) -> Result<()> {
 
     // 2. Create or patch hooks.json
     let hooks_json_path = cursor_dir.join(HOOKS_JSON);
-    let patched = patch_cursor_hooks_json(&hooks_json_path, verbose)?;
+    let patched = patch_cursor_hooks_json(&hooks_json_path, verbose, dry_run)?;
 
     // Report
     let hook_status = if hook_changed {
@@ -1657,7 +1807,7 @@ fn install_cursor_hooks(verbose: u8) -> Result<()> {
 
 /// Patch ~/.cursor/hooks.json to add RTK preToolUse hook.
 /// Returns true if the file was modified.
-fn patch_cursor_hooks_json(path: &Path, verbose: u8) -> Result<bool> {
+fn patch_cursor_hooks_json(path: &Path, verbose: u8, dry_run: bool) -> Result<bool> {
     let mut root = if path.exists() {
         let content = fs::read_to_string(path)
             .with_context(|| format!("Failed to read {}", path.display()))?;
@@ -1682,6 +1832,17 @@ fn patch_cursor_hooks_json(path: &Path, verbose: u8) -> Result<bool> {
     // Insert the RTK preToolUse entry
     insert_cursor_hook_entry(&mut root);
 
+    let serialized =
+        serde_json::to_string_pretty(&root).context("Failed to serialize hooks.json")?;
+
+    if dry_run {
+        println!("[dry-run] would patch hooks.json: {}", path.display());
+        if verbose > 0 {
+            println!("[dry-run] content:\n{}", serialized);
+        }
+        return Ok(true);
+    }
+
     // Backup if exists
     if path.exists() {
         let backup_path = path.with_extension("json.bak");
@@ -1693,8 +1854,6 @@ fn patch_cursor_hooks_json(path: &Path, verbose: u8) -> Result<bool> {
     }
 
     // Atomic write
-    let serialized =
-        serde_json::to_string_pretty(&root).context("Failed to serialize hooks.json")?;
     atomic_write(path, &serialized)?;
 
     Ok(true)
@@ -2108,9 +2267,9 @@ fn show_codex_config() -> Result<()> {
     Ok(())
 }
 
-fn run_opencode_only_mode(verbose: u8) -> Result<()> {
+fn run_opencode_only_mode(verbose: u8, dry_run: bool) -> Result<()> {
     let opencode_plugin_path = prepare_opencode_plugin_path()?;
-    ensure_opencode_plugin_installed(&opencode_plugin_path, verbose)?;
+    ensure_opencode_plugin_installed(&opencode_plugin_path, verbose, dry_run)?;
     println!("\nOpenCode plugin installed (global).\n");
     println!("  OpenCode: {}", opencode_plugin_path.display());
     println!("  Restart OpenCode. Test with: git status\n");
@@ -2129,28 +2288,44 @@ fn resolve_gemini_dir() -> Result<PathBuf> {
 }
 
 /// Entry point for `rtk init --gemini`
-pub fn run_gemini(global: bool, hook_only: bool, patch_mode: PatchMode, verbose: u8) -> Result<()> {
+pub fn run_gemini(
+    global: bool,
+    hook_only: bool,
+    patch_mode: PatchMode,
+    verbose: u8,
+    dry_run: bool,
+) -> Result<()> {
     if !global {
         anyhow::bail!("Gemini support is global-only. Use: rtk init -g --gemini");
     }
 
     let gemini_dir = resolve_gemini_dir()?;
-    fs::create_dir_all(&gemini_dir).with_context(|| {
-        format!(
-            "Failed to create Gemini config dir: {}",
-            gemini_dir.display()
-        )
-    })?;
+    if !dry_run {
+        fs::create_dir_all(&gemini_dir).with_context(|| {
+            format!(
+                "Failed to create Gemini config dir: {}",
+                gemini_dir.display()
+            )
+        })?;
+    }
 
     // 1. Install hook script
     let hook_dir = gemini_dir.join("hooks");
-    fs::create_dir_all(&hook_dir)
-        .with_context(|| format!("Failed to create hook dir: {}", hook_dir.display()))?;
+    if !dry_run {
+        fs::create_dir_all(&hook_dir)
+            .with_context(|| format!("Failed to create hook dir: {}", hook_dir.display()))?;
+    }
     let hook_path = hook_dir.join(GEMINI_HOOK_FILE);
-    write_if_changed(&hook_path, GEMINI_HOOK_SCRIPT, "Gemini hook", verbose)?;
+    write_if_changed(
+        &hook_path,
+        GEMINI_HOOK_SCRIPT,
+        "Gemini hook",
+        verbose,
+        dry_run,
+    )?;
 
     #[cfg(unix)]
-    {
+    if !dry_run {
         use std::os::unix::fs::PermissionsExt;
         fs::set_permissions(&hook_path, fs::Permissions::from_mode(0o755))
             .with_context(|| format!("Failed to set hook permissions: {}", hook_path.display()))?;
@@ -2160,11 +2335,11 @@ pub fn run_gemini(global: bool, hook_only: bool, patch_mode: PatchMode, verbose:
     if !hook_only {
         let gemini_md_path = gemini_dir.join(GEMINI_MD);
         // Reuse the same slim RTK awareness content
-        write_if_changed(&gemini_md_path, RTK_SLIM, GEMINI_MD, verbose)?;
+        write_if_changed(&gemini_md_path, RTK_SLIM, GEMINI_MD, verbose, dry_run)?;
     }
 
     // 3. Patch ~/.gemini/settings.json
-    patch_gemini_settings(&gemini_dir, &hook_path, patch_mode, verbose)?;
+    patch_gemini_settings(&gemini_dir, &hook_path, patch_mode, verbose, dry_run)?;
 
     println!("\nGemini CLI hook installed (global).\n");
     println!("  Hook: {}", hook_path.display());
@@ -2181,6 +2356,7 @@ fn patch_gemini_settings(
     hook_path: &Path,
     patch_mode: PatchMode,
     verbose: u8,
+    dry_run: bool,
 ) -> Result<()> {
     let settings_path = gemini_dir.join(SETTINGS_JSON);
     let hook_cmd = hook_path.to_string_lossy().to_string();
@@ -2260,6 +2436,18 @@ fn patch_gemini_settings(
 
     // Write atomically
     let content = serde_json::to_string_pretty(&settings)?;
+
+    if dry_run {
+        println!(
+            "[dry-run] would patch gemini settings.json: {}",
+            settings_path.display()
+        );
+        if verbose > 0 {
+            println!("[dry-run] content:\n{}", content);
+        }
+        return Ok(());
+    }
+
     let tmp = NamedTempFile::new_in(gemini_dir)?;
     fs::write(tmp.path(), &content)?;
     tmp.persist(&settings_path)
@@ -2372,12 +2560,14 @@ rtk proxy <cmd>       # Run raw (no filtering) but track usage
 "#;
 
 /// Entry point for `rtk init --copilot`
-pub fn run_copilot(verbose: u8) -> Result<()> {
+pub fn run_copilot(verbose: u8, dry_run: bool) -> Result<()> {
     // Install in current project's .github/ directory
     let github_dir = Path::new(".github");
     let hooks_dir = github_dir.join("hooks");
 
-    fs::create_dir_all(&hooks_dir).context("Failed to create .github/hooks/ directory")?;
+    if !dry_run {
+        fs::create_dir_all(&hooks_dir).context("Failed to create .github/hooks/ directory")?;
+    }
 
     // 1. Write hook config
     let hook_path = hooks_dir.join("rtk-rewrite.json");
@@ -2386,6 +2576,7 @@ pub fn run_copilot(verbose: u8) -> Result<()> {
         COPILOT_HOOK_JSON,
         "Copilot hook config",
         verbose,
+        dry_run,
     )?;
 
     // 2. Write instructions
@@ -2395,6 +2586,7 @@ pub fn run_copilot(verbose: u8) -> Result<()> {
         COPILOT_INSTRUCTIONS,
         "Copilot instructions",
         verbose,
+        dry_run,
     )?;
 
     println!("\nGitHub Copilot integration installed (project-scoped).\n");
@@ -2486,13 +2678,13 @@ More content"#;
         fs::create_dir_all(plugin_path.parent().unwrap()).unwrap();
         assert!(!plugin_path.exists());
 
-        let changed = ensure_opencode_plugin_installed(&plugin_path, 0).unwrap();
+        let changed = ensure_opencode_plugin_installed(&plugin_path, 0, false).unwrap();
         assert!(changed);
         let content = fs::read_to_string(&plugin_path).unwrap();
         assert_eq!(content, OPENCODE_PLUGIN);
 
         fs::write(&plugin_path, "// old").unwrap();
-        let changed_again = ensure_opencode_plugin_installed(&plugin_path, 0).unwrap();
+        let changed_again = ensure_opencode_plugin_installed(&plugin_path, 0, false).unwrap();
         assert!(changed_again);
         let content_updated = fs::read_to_string(&plugin_path).unwrap();
         assert_eq!(content_updated, OPENCODE_PLUGIN);
@@ -2615,8 +2807,8 @@ More notes
         let agents_md = temp.path().join("AGENTS.md");
 
         fs::write(&agents_md, "# Team rules\n").unwrap();
-        let first_added = patch_agents_md(&agents_md, RTK_MD_REF, 0).unwrap();
-        let second_added = patch_agents_md(&agents_md, RTK_MD_REF, 0).unwrap();
+        let first_added = patch_agents_md(&agents_md, RTK_MD_REF, 0, false).unwrap();
+        let second_added = patch_agents_md(&agents_md, RTK_MD_REF, 0, false).unwrap();
 
         assert!(first_added);
         assert!(!second_added);
@@ -2639,6 +2831,7 @@ More notes
             true,
             PatchMode::Auto,
             0,
+            false,
         )
         .unwrap_err();
         assert_eq!(
@@ -2661,6 +2854,7 @@ More notes
             true,
             PatchMode::Skip,
             0,
+            false,
         )
         .unwrap_err();
         assert_eq!(
@@ -2674,7 +2868,7 @@ More notes
         let temp = TempDir::new().unwrap();
         let agents_md = temp.path().join("AGENTS.md");
 
-        let added = patch_agents_md(&agents_md, RTK_MD_REF, 0).unwrap();
+        let added = patch_agents_md(&agents_md, RTK_MD_REF, 0, false).unwrap();
 
         assert!(added);
         let content = fs::read_to_string(&agents_md).unwrap();
@@ -2691,7 +2885,7 @@ More notes
         )
         .unwrap();
 
-        let added = patch_agents_md(&agents_md, RTK_MD_REF, 0).unwrap();
+        let added = patch_agents_md(&agents_md, RTK_MD_REF, 0, false).unwrap();
 
         assert!(added);
         let content = fs::read_to_string(&agents_md).unwrap();

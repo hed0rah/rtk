@@ -337,6 +337,10 @@ enum Commands {
         #[arg(long = "no-patch", group = "patch")]
         no_patch: bool,
 
+        /// Show what would be written/changed without touching the filesystem
+        #[arg(long)]
+        dry_run: bool,
+
         /// Remove RTK artifacts for the selected assistant mode
         #[arg(long)]
         uninstall: bool,
@@ -1604,6 +1608,7 @@ fn run_cli() -> Result<i32> {
             hook_only,
             auto_patch,
             no_patch,
+            dry_run,
             uninstall,
             codex,
             copilot,
@@ -1621,9 +1626,9 @@ fn run_cli() -> Result<i32> {
                 } else {
                     hooks::init::PatchMode::Ask
                 };
-                hooks::init::run_gemini(global, hook_only, patch_mode, cli.verbose)?;
+                hooks::init::run_gemini(global, hook_only, patch_mode, cli.verbose, dry_run)?;
             } else if copilot {
-                hooks::init::run_copilot(cli.verbose)?;
+                hooks::init::run_copilot(cli.verbose, dry_run)?;
             } else {
                 let install_opencode = opencode;
                 let install_claude = !opencode;
@@ -1650,6 +1655,7 @@ fn run_cli() -> Result<i32> {
                     codex,
                     patch_mode,
                     cli.verbose,
+                    dry_run,
                 )?;
             }
             0
