@@ -1,3 +1,6 @@
+> **Personal fork of [rtk-ai/rtk](https://github.com/rtk-ai/rtk) — telemetry removed, build-from-source only.**
+> To install: `cargo install --path .`
+
 <p align="center">
   <img src="https://avatars.githubusercontent.com/u/258253854?v=4" alt="RTK - Rust Token Killer" width="500">
 </p>
